@@ -14,14 +14,11 @@ export const getResponsesRequestOptions = (
 
 export const hasAgentInitiator = (payload: ResponsesPayload): boolean =>
   getPayloadItems(payload).some((item) => {
-    if (!item || typeof item !== "object") return false
-    const record = item as Record<string, unknown>
-    const role =
-      typeof record.role === "string" ? record.role.toLowerCase() : undefined
-    if (role === "assistant" || role === "tool") return true
-    const type =
-      typeof record.type === "string" ? record.type.toLowerCase() : undefined
-    return type === "function_call" || type === "function_call_output"
+    if (!("role" in item) || !item.role) {
+      return true
+    }
+    const role = typeof item.role === "string" ? item.role.toLowerCase() : ""
+    return role === "assistant"
   })
 
 export const hasVisionInput = (payload: ResponsesPayload): boolean => {
