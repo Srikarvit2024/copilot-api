@@ -332,9 +332,28 @@ export const createResponses = async (
 ): Promise<CreateResponsesReturn> => {
   if (!state.copilotToken) throw new Error("Copilot token not found")
 
+  // const headers: Record<string, string> = {
+  //   ...copilotHeaders(state, vision),
+  //   "X-Initiator": initiator,
+  // }
+
+  const isAgentCall = Array.isArray(payload.input)
+    && payload.input.some((item) => {
+      if (!item || typeof item !== "object") return false
+      const record = item as Record<string, unknown>
+      const role =
+        typeof record.role === "string" ? record.role.toLowerCase() : undefined
+      if (role === "assistant" || role === "tool") return true
+      const type =
+        typeof record.type === "string" ? record.type.toLowerCase() : undefined
+      return type === "function_call" || type === "function_call_output"
+    })
+
+  const resolvedInitiator = isAgentCall ? "agent" : initiator
+
   const headers: Record<string, string> = {
     ...copilotHeaders(state, vision),
-    "X-Initiator": initiator,
+    "X-Initiator": resolvedInitiator,
   }
 
   // service_tier is not supported by github copilot

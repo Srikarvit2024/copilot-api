@@ -25,15 +25,19 @@ export const createMessages = async (
       && message.content.some((block) => block.type === "image"),
   )
 
-  let isInitiateRequest = false
-  const lastMessage = payload.messages.at(-1)
-  if (lastMessage?.role === "user") {
-    isInitiateRequest =
-      Array.isArray(lastMessage.content) ?
-        lastMessage.content.some((block) => block.type !== "tool_result")
-      : true
-  }
+  // let isInitiateRequest = false
+  // const lastMessage = payload.messages.at(-1)
+  // if (lastMessage?.role === "user") {
+  //   isInitiateRequest =
+  //     Array.isArray(lastMessage.content) ?
+  //       lastMessage.content.some((block) => block.type !== "tool_result")
+  //     : true
+  // }
 
+  const isInitiateRequest = !payload.messages.some(
+    (message) => message.role === "assistant",
+  )
+  
   const headers: Record<string, string> = {
     ...copilotHeaders(state, enableVision),
     "X-Initiator": isInitiateRequest ? "user" : "agent",
