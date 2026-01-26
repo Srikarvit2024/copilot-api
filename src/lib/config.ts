@@ -4,7 +4,12 @@ import fs from "node:fs"
 import { PATHS } from "./paths"
 
 export interface AppConfig {
+  // Per-model extra system prompt text appended during Anthropic -> Responses translation.
+  // To effectively disable a default prompt for a model, set its value to an empty string in config.json
+  // (the merge step only fills in missing keys).
   extraPrompts?: Record<string, string>
+  // Small model used for warmup requests (see messages handler). Set to empty string to disable
+  // warmup override without deleting code or changing defaults.
   smallModel?: string
   modelReasoningEfforts?: Record<
     string,
@@ -22,8 +27,8 @@ const gpt5ExplorationPrompt = `## Exploration and reading files
 
 const defaultConfig: AppConfig = {
   extraPrompts: {
-    "gpt-5-mini": gpt5ExplorationPrompt,
-    "gpt-5.1-codex-max": gpt5ExplorationPrompt,
+    "gpt-5-mini": "",
+    "gpt-5.1-codex-max": "",
   },
   smallModel: "gpt-5-mini",
   modelReasoningEfforts: {
@@ -140,5 +145,26 @@ export function getReasoningEffortForModel(
   model: string,
 ): "none" | "minimal" | "low" | "medium" | "high" | "xhigh" {
   const config = getConfig()
-  return config.modelReasoningEfforts?.[model] ?? "high"
+  const explicit = config.modelReasoningEfforts?.[model]
+  if (explicit !== undefined) {
+    return explicit
+  }
+
+  return getDefaultReasoningEffort(model)
+}
+
+const getDefaultReasoningEffort = (
+  model: string,
+): "none" | "minimal" | "low" | "medium" | "high" | "xhigh" => {
+  const normalizedModel = model.toLowerCase()
+
+  if (normalizedModel.startsWith("gpt-5.2")) {
+    return "xhigh"
+  }
+
+  // if (normalizedModel.startsWith("claude")) {
+  //   return "medium"
+  // }
+
+  return "high"
 }
