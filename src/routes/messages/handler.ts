@@ -67,7 +67,7 @@ export async function handleCompletion(c: Context) {
   if (isCompact) {
     logger.debug("Is compact request:", isCompact)
     if (shouldCompactUseSmallModel()) {
-      anthropicPayload.model = getSmallModel()
+      anthropicPayload.model = 'gemini-3-pro-preview'
     }
   } else {
     // Merge tool_result and text blocks into tool_result to avoid consuming premium requests
