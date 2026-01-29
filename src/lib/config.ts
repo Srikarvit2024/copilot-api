@@ -16,6 +16,7 @@ export interface AppConfig {
     "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
   >
   useFunctionApplyPatch?: boolean
+  compactUseSmallModel?: boolean
 }
 
 const gpt5ExplorationPrompt = `## Exploration and reading files
@@ -35,6 +36,7 @@ const defaultConfig: AppConfig = {
     "gpt-5-mini": "low",
   },
   useFunctionApplyPatch: true,
+  compactUseSmallModel: true,
 }
 
 let cachedConfig: AppConfig | null = null
@@ -167,4 +169,9 @@ const getDefaultReasoningEffort = (
   // }
 
   return "high"
+}
+
+export function shouldCompactUseSmallModel(): boolean {
+  const config = getConfig()
+  return config.compactUseSmallModel ?? true
 }
