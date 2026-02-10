@@ -160,9 +160,9 @@ const getDefaultReasoningEffort = (
 ): "none" | "minimal" | "low" | "medium" | "high" | "xhigh" => {
   const normalizedModel = model.toLowerCase()
 
-  if (normalizedModel.startsWith("gpt-5.2")) {
-    return "xhigh"
-  }
+  // if (normalizedModel.startsWith("gpt-5.2")) {
+  //   return "xhigh"
+  // }
 
   // if (normalizedModel.startsWith("claude")) {
   //   return "medium"
