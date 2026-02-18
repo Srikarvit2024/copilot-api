@@ -58,10 +58,13 @@ export const createMessages = async (
     headers["anthropic-beta"] = "interleaved-thinking-2025-05-14"
   }
 
+  // Strip fields not supported by the Copilot Messages API
+  const { output_config: _output_config, service_tier: _service_tier, ...cleanPayload } = payload
+
   const response = await fetch(`${copilotBaseUrl(state)}/v1/messages`, {
     method: "POST",
     headers,
-    body: JSON.stringify(payload),
+    body: JSON.stringify(cleanPayload),
   })
 
   if (!response.ok) {
