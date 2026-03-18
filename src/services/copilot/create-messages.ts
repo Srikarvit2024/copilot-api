@@ -5,8 +5,14 @@ import type {
   AnthropicMessagesPayload,
   AnthropicResponse,
 } from "~/routes/messages/anthropic-types"
+import type { SubagentMarker } from "~/routes/messages/subagent-marker"
 
-import { copilotBaseUrl, copilotHeaders } from "~/lib/api-config"
+import {
+  copilotBaseUrl,
+  copilotHeaders,
+  prepareForCompact,
+  prepareInteractionHeaders,
+} from "~/lib/api-config"
 import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
 
@@ -54,9 +60,12 @@ const buildAnthropicBetaHeader = (
 
 export const createMessages = async (
   payload: AnthropicMessagesPayload,
-  anthropicBetaHeader?: string,
-  options?: {
-    initiator?: "agent" | "user"
+  anthropicBetaHeader: string | undefined,
+  options: {
+    subagentMarker?: SubagentMarker | null
+    requestId: string
+    sessionId?: string
+    isCompact?: boolean
   },
 ): Promise<CreateMessagesReturn> => {
   if (!state.copilotToken) throw new Error("Copilot token not found")
@@ -79,9 +88,17 @@ export const createMessages = async (
   }
 
   const headers: Record<string, string> = {
-    ...copilotHeaders(state, enableVision),
-    "X-Initiator": initiator,
+    ...copilotHeaders(state, options.requestId, enableVision),
+    "x-initiator": isInitiateRequest ? "user" : "agent",
   }
+
+  prepareInteractionHeaders(
+    options.sessionId,
+    Boolean(options.subagentMarker),
+    headers,
+  )
+
+  prepareForCompact(headers, options.isCompact)
 
   // align with vscode copilot extension anthropic-beta
   const anthropicBeta = buildAnthropicBetaHeader(

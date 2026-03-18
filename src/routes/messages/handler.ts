@@ -7,12 +7,14 @@ import type { Model } from "~/services/copilot/get-models"
 import { awaitApproval } from "~/lib/approval"
 import {
   getSmallModel,
-  shouldCompactUseSmallModel,
   getReasoningEffortForModel,
+  isMessagesApiEnabled,
 } from "~/lib/config"
 import { createHandlerLogger } from "~/lib/logger"
+import { findEndpointModel } from "~/lib/models"
 import { checkRateLimit } from "~/lib/rate-limit"
 import { state } from "~/lib/state"
+import { generateRequestIdFromPayload, getRootSessionId } from "~/lib/utils"
 import {
   buildErrorEvent,
   createResponsesStreamState,
@@ -22,7 +24,11 @@ import {
   translateAnthropicMessagesToResponsesPayload,
   translateResponsesResultToAnthropic,
 } from "~/routes/messages/responses-translation"
-import { getResponsesRequestOptions } from "~/routes/responses/utils"
+import {
+  applyResponsesApiContextManagement,
+  compactInputByLatestCompaction,
+  getResponsesRequestOptions,
+} from "~/routes/responses/utils"
 import {
   createChatCompletions,
   type ChatCompletionChunk,
@@ -34,6 +40,8 @@ import {
   type ResponsesResult,
   type ResponseStreamEvent,
 } from "~/services/copilot/create-responses"
+
+import type { SubagentMarker } from "./subagent-marker"
 
 import {
   type AnthropicMessagesPayload,
@@ -60,10 +68,12 @@ export async function handleCompletion(c: Context) {
   logger.debug("Anthropic request payload:", JSON.stringify(anthropicPayload))
 
   const subagentMarker = parseSubagentMarkerFromFirstUser(anthropicPayload)
-  const initiatorOverride = subagentMarker ? "agent" : undefined
   if (subagentMarker) {
     logger.debug("Detected Subagent marker:", JSON.stringify(subagentMarker))
   }
+
+  const sessionId = getRootSessionId(anthropicPayload, c)
+  logger.debug("Extracted session ID:", sessionId)
 
   // claude code and opencode compact request detection
   const isCompact = isCompactRequest(anthropicPayload)
@@ -91,27 +101,43 @@ export async function handleCompletion(c: Context) {
     mergeToolResultForClaude(anthropicPayload)
   }
 
+  const requestId = generateRequestIdFromPayload(anthropicPayload, sessionId)
+  logger.debug("Generated request ID:", requestId)
+
   if (state.manualApprove) {
     await awaitApproval()
   }
 
-  const selectedModel = state.models?.data.find(
-    (m) => m.id === anthropicPayload.model,
-  )
+  const selectedModel = findEndpointModel(anthropicPayload.model)
+  anthropicPayload.model = selectedModel?.id ?? anthropicPayload.model
 
   if (shouldUseMessagesApi(selectedModel)) {
     return await handleWithMessagesApi(c, anthropicPayload, {
       anthropicBetaHeader: anthropicBeta,
-      initiatorOverride,
+      subagentMarker,
       selectedModel,
+      requestId,
+      sessionId,
+      isCompact,
     })
   }
 
   if (shouldUseResponsesApi(selectedModel)) {
-    return await handleWithResponsesApi(c, anthropicPayload, initiatorOverride)
+    return await handleWithResponsesApi(c, anthropicPayload, {
+      subagentMarker,
+      selectedModel,
+      requestId,
+      sessionId,
+      isCompact,
+    })
   }
 
-  return await handleWithChatCompletions(c, anthropicPayload, initiatorOverride)
+  return await handleWithChatCompletions(c, anthropicPayload, {
+    subagentMarker,
+    requestId,
+    sessionId,
+    isCompact,
+  })
 }
 
 const RESPONSES_ENDPOINT = "/responses"
@@ -120,8 +146,14 @@ const MESSAGES_ENDPOINT = "/v1/messages"
 const handleWithChatCompletions = async (
   c: Context,
   anthropicPayload: AnthropicMessagesPayload,
-  initiatorOverride?: "agent" | "user",
+  options: {
+    subagentMarker?: SubagentMarker | null
+    requestId: string
+    sessionId?: string
+    isCompact?: boolean
+  },
 ) => {
+  const { subagentMarker, requestId, sessionId, isCompact } = options
   const openAIPayload = translateToOpenAI(anthropicPayload)
   logger.debug(
     "Translated OpenAI request payload:",
@@ -129,7 +161,10 @@ const handleWithChatCompletions = async (
   )
 
   const response = await createChatCompletions(openAIPayload, {
-    initiator: initiatorOverride,
+    subagentMarker,
+    requestId,
+    sessionId,
+    isCompact,
   })
 
   if (isNonStreaming(response)) {
@@ -182,10 +217,27 @@ const handleWithChatCompletions = async (
 const handleWithResponsesApi = async (
   c: Context,
   anthropicPayload: AnthropicMessagesPayload,
-  initiatorOverride?: "agent" | "user",
+  options: {
+    subagentMarker?: SubagentMarker | null
+    selectedModel?: Model
+    requestId: string
+    sessionId?: string
+    isCompact?: boolean
+  },
 ) => {
+  const { subagentMarker, selectedModel, requestId, sessionId, isCompact } =
+    options
+
   const responsesPayload =
     translateAnthropicMessagesToResponsesPayload(anthropicPayload)
+
+  applyResponsesApiContextManagement(
+    responsesPayload,
+    selectedModel?.capabilities.limits.max_prompt_tokens,
+  )
+
+  compactInputByLatestCompaction(responsesPayload)
+
   logger.debug(
     "Translated Responses payload:",
     JSON.stringify(responsesPayload),
@@ -194,7 +246,11 @@ const handleWithResponsesApi = async (
   const { vision, initiator } = getResponsesRequestOptions(responsesPayload)
   const response = await createResponses(responsesPayload, {
     vision,
-    initiator: initiatorOverride ?? initiator,
+    initiator: initiator,
+    subagentMarker,
+    requestId,
+    sessionId,
+    isCompact,
   })
 
   if (responsesPayload.stream && isAsyncIterable(response)) {
@@ -267,14 +323,23 @@ const handleWithResponsesApi = async (
 const handleWithMessagesApi = async (
   c: Context,
   anthropicPayload: AnthropicMessagesPayload,
-  options?: {
+  options: {
     anthropicBetaHeader?: string
-    initiatorOverride?: "agent" | "user"
+    subagentMarker?: SubagentMarker | null
     selectedModel?: Model
+    requestId: string
+    sessionId?: string
+    isCompact?: boolean
   },
 ) => {
-  const { anthropicBetaHeader, initiatorOverride, selectedModel } =
-    options ?? {}
+  const {
+    anthropicBetaHeader,
+    subagentMarker,
+    selectedModel,
+    requestId,
+    sessionId,
+    isCompact,
+  } = options
   // Pre-request processing: filter thinking blocks for Claude models so only
   // valid thinking blocks are sent to the Copilot Messages API.
   for (const msg of anthropicPayload.messages) {
@@ -291,7 +356,12 @@ const handleWithMessagesApi = async (
     }
   }
 
-  if (selectedModel?.capabilities.supports.adaptive_thinking) {
+  // https://platform.claude.com/docs/en/build-with-claude/extended-thinking#extended-thinking-with-tool-use
+  // Using tool_choice: {"type": "any"} or tool_choice: {"type": "tool", "name": "..."} will result in an error because these options force tool use, which is incompatible with extended thinking.
+  const toolChoice = anthropicPayload.tool_choice
+  const disableThink = toolChoice?.type === "any" || toolChoice?.type === "tool"
+
+  if (selectedModel?.capabilities.supports.adaptive_thinking && !disableThink) {
     anthropicPayload.thinking = {
       type: "adaptive",
     }
@@ -303,7 +373,10 @@ const handleWithMessagesApi = async (
   logger.debug("Translated Messages payload:", JSON.stringify(anthropicPayload))
 
   const response = await createMessages(anthropicPayload, anthropicBetaHeader, {
-    initiator: initiatorOverride,
+    subagentMarker,
+    requestId,
+    sessionId,
+    isCompact,
   })
 
   if (isAsyncIterable(response)) {
@@ -335,6 +408,10 @@ const shouldUseResponsesApi = (selectedModel: Model | undefined): boolean => {
 }
 
 const shouldUseMessagesApi = (selectedModel: Model | undefined): boolean => {
+  const useMessagesApi = isMessagesApiEnabled()
+  if (!useMessagesApi) {
+    return false
+  }
   return (
     selectedModel?.supported_endpoints?.includes(MESSAGES_ENDPOINT) ?? false
   )
