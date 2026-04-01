@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto"
 
 import type { State } from "./state"
 
+import { requestContext } from "./request-context"
+
 export const isOpencodeOauthApp = (): boolean => {
   return process.env.COPILOT_API_OAUTH_APP?.trim() === "opencode"
 }
@@ -27,18 +29,27 @@ export const getGitHubBaseUrl = (): string => {
 
 export const getGitHubApiBaseUrl = (): string => {
   const resolvedDomain = getEnterpriseDomain()
-  return resolvedDomain ?
-      `https://${resolvedDomain}/api/v3`
-    : GITHUB_API_BASE_URL
+  return resolvedDomain ? `https://api.${resolvedDomain}` : GITHUB_API_BASE_URL
 }
 
-export const getOpencodeOauthHeaders = (): Record<string, string> => {
+const getOpencodeOauthHeaders = (): Record<string, string> => {
   return {
     Accept: "application/json",
     "Content-Type": "application/json",
     "User-Agent":
-      "opencode/1.2.16 ai-sdk/provider-utils/3.0.21 runtime/bun/1.3.10, opencode/1.2.16",
+      "opencode/1.3.9 ai-sdk/provider-utils/4.0.21 runtime/bun/1.3.11, opencode/1.3.9",
   }
+}
+
+const normalizeOpencodeUserAgent = (userAgent: string): string => {
+  const candidate = userAgent.trim()
+  const opencodeProduct = candidate.match(/^opencode\/[^\s,]+/u)?.[0]
+
+  if (!opencodeProduct || candidate.includes(`, ${opencodeProduct}`)) {
+    return candidate
+  }
+
+  return `${candidate}, ${opencodeProduct}`
 }
 
 export const getOauthUrls = (): {
@@ -135,6 +146,11 @@ export const copilotHeaders = (
       Authorization: `Bearer ${state.copilotToken}`,
       ...getOpencodeOauthHeaders(),
       "Openai-Intent": "conversation-edits",
+    }
+
+    const userAgent = requestContext.getStore()?.userAgent.trim()
+    if (userAgent?.startsWith("opencode/")) {
+      headers["User-Agent"] = normalizeOpencodeUserAgent(userAgent)
     }
 
     if (vision) headers["Copilot-Vision-Request"] = "true"

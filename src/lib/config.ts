@@ -22,6 +22,9 @@ export interface AppConfig {
   >
   useFunctionApplyPatch?: boolean
   useMessagesApi?: boolean
+  anthropicApiKey?: string
+  useResponsesApiWebSearch?: boolean
+  claudeTokenMultiplier?: number
 }
 
 export interface ModelConfig {
@@ -83,6 +86,7 @@ const defaultConfig: AppConfig = {
   extraPrompts: {
     "gpt-5-mini": "",
     "gpt-5.3-codex": "",
+    "gpt-5.4-mini": "",
     "gpt-5.4": "",
   },
   smallModel: "gpt-5-mini",
@@ -90,10 +94,12 @@ const defaultConfig: AppConfig = {
   modelReasoningEfforts: {
     "gpt-5-mini": "low",
     "gpt-5.3-codex": "xhigh",
+    "gpt-5.4-mini": "xhigh",
     "gpt-5.4": "xhigh",
   },
   useFunctionApplyPatch: true,
   useMessagesApi: true,
+  useResponsesApiWebSearch: true,
 }
 
 let cachedConfig: AppConfig | null = null
@@ -310,4 +316,19 @@ export function listEnabledProviders(): Array<string> {
 export function isMessagesApiEnabled(): boolean {
   const config = getConfig()
   return config.useMessagesApi ?? true
+}
+
+export function getAnthropicApiKey(): string | undefined {
+  const config = getConfig()
+  return config.anthropicApiKey ?? process.env.ANTHROPIC_API_KEY ?? undefined
+}
+
+export function isResponsesApiWebSearchEnabled(): boolean {
+  const config = getConfig()
+  return config.useResponsesApiWebSearch ?? true
+}
+
+export function getClaudeTokenMultiplier(): number {
+  const config = getConfig()
+  return config.claudeTokenMultiplier ?? 1.15
 }

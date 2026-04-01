@@ -78,6 +78,11 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   const serverUrl = `http://localhost:${options.port}`
 
   if (options.claudeCode) {
+    consola.log(
+      "\n💡 Tip: The --claude-code flag simply generates a clipboard command for launching Claude Code. \n"
+        + "All models remain fully accessible without this flag, just configure the model ID directly in your settings.json file.",
+    )
+
     invariant(state.models, "Models should be loaded by now")
 
     const selectedModel = await consola.prompt(
@@ -102,10 +107,11 @@ export async function runServer(options: RunServerOptions): Promise<void> {
         ANTHROPIC_AUTH_TOKEN: "dummy",
         ANTHROPIC_MODEL: selectedModel,
         ANTHROPIC_DEFAULT_SONNET_MODEL: selectedModel,
-        ANTHROPIC_SMALL_FAST_MODEL: selectedSmallModel,
         ANTHROPIC_DEFAULT_HAIKU_MODEL: selectedSmallModel,
         DISABLE_NON_ESSENTIAL_MODEL_CALLS: "1",
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+        CLAUDE_CODE_ATTRIBUTION_HEADER: "0",
+        CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false",
       },
       "claude",
     )
