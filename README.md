@@ -17,14 +17,13 @@
 >
 > Use this proxy responsibly to avoid account restrictions.
 
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/E1E519XS7W)
-
 ---
 
 > [!NOTE]
 > [opencode](https://github.com/sst/opencode) already ships with a built-in GitHub Copilot provider, so you may not need this project for basic usage. This proxy is still useful if you want OpenCode to talk to Copilot through `@ai-sdk/anthropic`, preserve Anthropic Messages semantics for tool use, prefer the native Messages API over Chat Completions API for Claude-family models, use gpt phase-aware commentary, or optimize premium requests.
 
 ---
+
 ## Important Notes
 
 > [!IMPORTANT]
@@ -287,6 +286,7 @@ The following command line options are available for the `start` command:
         "enabled": true,
         "baseUrl": "your-base-url",
         "apiKey": "sk-your-provider-key",
+        "authType": "x-api-key",
         "adjustInputTokens": false,
         "models": {
           "kimi-k2.5": {
@@ -321,7 +321,8 @@ The following command line options are available for the `start` command:
 - **providers:** Global upstream provider map. Each provider key (for example `custom`) becomes a route prefix (`/custom/v1/messages`). Currently only `type: "anthropic"` is supported.
   - `enabled` defaults to `true` if omitted.
   - `baseUrl` should be provider API base URL without trailing `/v1/messages`.
-  - `apiKey` is used as upstream `x-api-key`.
+  - `apiKey` is used as the upstream credential value.
+  - `authType` (optional): Controls how `apiKey` is sent upstream. Supports `x-api-key` (default) and `authorization`. When set to `authorization`, the proxy sends `Authorization: Bearer <apiKey>`.
   - `adjustInputTokens` (optional): When `true`, the proxy will adjust the `input_tokens` in the usage response by subtracting `cache_read_input_tokens` and `cache_creation_input_tokens`. 
   - `models` (optional): Per-model configuration map. Each key is a model ID (matching the model name in requests), and the value is:
     - `temperature` (optional): Default temperature value used when the request does not specify one.
