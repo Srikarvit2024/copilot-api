@@ -1,32 +1,39 @@
 import type { Model } from "~/services/copilot/get-models"
 
+import {
+  COMPACT_AUTO_CONTINUE,
+  COMPACT_REQUEST,
+  compactAutoContinuePromptStarts,
+  compactMessageSections,
+  compactSummaryPromptStart,
+  compactSystemPromptStart,
+  compactTextOnlyGuard,
+  type CompactType,
+} from "~/lib/compact"
 import { getReasoningEffortForModel } from "~/lib/config"
 
 import type {
+  AnthropicDocumentBlock,
+  AnthropicImageBlock,
   AnthropicMessage,
   AnthropicMessagesPayload,
   AnthropicTextBlock,
   AnthropicToolResultBlock,
+  AnthropicUserContentBlock,
 } from "./anthropic-types"
 
-const compactSystemPromptStart =
-  "You are a helpful AI assistant tasked with summarizing conversations"
-const compactTextOnlyGuard =
-  "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."
-const compactSummaryPromptStart =
-  "Your task is to create a detailed summary of the conversation so far"
-const compactMessageSections = ["Pending Tasks:", "Current Work:"] as const
 export const TOOL_REFERENCE_TURN_BOUNDARY = "Tool loaded."
 
-const getAnthropicEffortForModel = (
-  model: string,
-): "low" | "medium" | "high" | "max" => {
-  const reasoningEffort = getReasoningEffortForModel(model)
+const IDE_EXECUTE_CODE_TOOL = "mcp__ide__executeCode"
+const IDE_GET_DIAGNOSTICS_TOOL = "mcp__ide__getDiagnostics"
+const IDE_GET_DIAGNOSTICS_DESCRIPTION =
+  "Get language diagnostics from VS Code. Returns errors, warnings, information, and hints for files in the workspace."
+const PDF_FILE_READ_PREFIX = "PDF file read:"
 
-  if (reasoningEffort === "xhigh") return "max"
-  if (reasoningEffort === "none" || reasoningEffort === "minimal") return "low"
-
-  return reasoningEffort
+type AnthropicAttachmentBlock = AnthropicImageBlock | AnthropicDocumentBlock
+type IndexedAttachment = {
+  attachment: AnthropicAttachmentBlock
+  order: number
 }
 
 const getCompactCandidateText = (message: AnthropicMessage): string => {
@@ -60,25 +67,46 @@ const isCompactMessage = (lastMessage: AnthropicMessage): boolean => {
   )
 }
 
-export const isCompactRequest = (
-  anthropicPayload: AnthropicMessagesPayload,
+const isCompactAutoContinueMessage = (
+  lastMessage: AnthropicMessage,
 ): boolean => {
+  const text = getCompactCandidateText(lastMessage)
+  return (
+    Boolean(text)
+    && compactAutoContinuePromptStarts.some((promptStart) =>
+      text.startsWith(promptStart),
+    )
+  )
+}
+
+export const getCompactType = (
+  anthropicPayload: AnthropicMessagesPayload,
+): CompactType => {
   const lastMessage = anthropicPayload.messages.at(-1)
   if (lastMessage && isCompactMessage(lastMessage)) {
-    return true
+    return COMPACT_REQUEST
+  }
+
+  if (lastMessage && isCompactAutoContinueMessage(lastMessage)) {
+    return COMPACT_AUTO_CONTINUE
   }
 
   const system = anthropicPayload.system
   if (typeof system === "string") {
-    return system.startsWith(compactSystemPromptStart)
+    return system.startsWith(compactSystemPromptStart) ? COMPACT_REQUEST : 0
   }
-  if (!Array.isArray(system)) return false
+  if (!Array.isArray(system)) return 0
 
-  return system.some(
+  const hasCompactSystemPrompt = system.some(
     (msg) =>
       typeof msg.text === "string"
       && msg.text.startsWith(compactSystemPromptStart),
   )
+  if (hasCompactSystemPrompt) {
+    return COMPACT_REQUEST
+  }
+
+  return 0
 }
 
 const mergeContentWithText = (
@@ -111,6 +139,259 @@ const mergeContentWithTexts = (
     return tr
   }
   return { ...tr, content: [...tr.content, ...textBlocks] }
+}
+
+const mergeContentWithAttachments = (
+  tr: AnthropicToolResultBlock,
+  attachments: Array<AnthropicAttachmentBlock>,
+): AnthropicToolResultBlock => {
+  if (typeof tr.content === "string") {
+    return {
+      ...tr,
+      content: [{ type: "text", text: tr.content }, ...attachments],
+    }
+  }
+
+  return {
+    ...tr,
+    content: [...tr.content, ...attachments],
+  }
+}
+
+const isAttachmentBlock = (
+  block: AnthropicUserContentBlock,
+): block is AnthropicAttachmentBlock => {
+  return block.type === "image" || block.type === "document"
+}
+
+const getMergeableToolResultIndices = (
+  toolResults: Array<AnthropicToolResultBlock>,
+): Array<number> => {
+  return toolResults.flatMap((block, index) =>
+    block.is_error || hasToolRef(block) ? [] : [index],
+  )
+}
+
+const mergeAttachmentsIntoToolResults = (
+  toolResults: Array<AnthropicToolResultBlock>,
+  attachmentsByToolResultIndex: Map<number, Array<IndexedAttachment>>,
+): Array<AnthropicToolResultBlock> => {
+  if (attachmentsByToolResultIndex.size === 0) {
+    return toolResults
+  }
+
+  return toolResults.map((block, index) => {
+    const matchedAttachments = attachmentsByToolResultIndex.get(index)
+    if (!matchedAttachments) {
+      return block
+    }
+
+    const orderedAttachments = [...matchedAttachments]
+      .sort((left, right) => left.order - right.order)
+      .map(({ attachment }) => attachment)
+
+    return mergeContentWithAttachments(block, orderedAttachments)
+  })
+}
+
+const assignAttachmentsToToolResults = (
+  target: Map<number, Array<IndexedAttachment>>,
+  attachments: Array<IndexedAttachment>,
+  options: {
+    toolResultIndices: Array<number>
+    fallbackToolResultIndices?: Array<number>
+  },
+): void => {
+  const { toolResultIndices } = options
+  const fallbackToolResultIndices =
+    options.fallbackToolResultIndices ?? toolResultIndices
+
+  if (attachments.length === 0) {
+    return
+  }
+
+  if (
+    toolResultIndices.length > 0
+    && toolResultIndices.length === attachments.length
+  ) {
+    for (const [index, toolResultIndex] of toolResultIndices.entries()) {
+      const currentAttachments = target.get(toolResultIndex)
+      if (currentAttachments) {
+        currentAttachments.push(attachments[index])
+        continue
+      }
+
+      target.set(toolResultIndex, [attachments[index]])
+    }
+    return
+  }
+
+  const lastToolResultIndex = fallbackToolResultIndices.at(-1)
+  if (lastToolResultIndex === undefined) {
+    return
+  }
+
+  const currentAttachments = target.get(lastToolResultIndex)
+  if (currentAttachments) {
+    currentAttachments.push(...attachments)
+    return
+  }
+
+  target.set(lastToolResultIndex, [...attachments])
+}
+
+const startsWithPdfFileRead = (
+  toolResult: AnthropicToolResultBlock,
+): boolean => {
+  if (typeof toolResult.content === "string") {
+    return toolResult.content.startsWith(PDF_FILE_READ_PREFIX)
+  }
+
+  if (toolResult.content.some((block) => block.type === "document")) {
+    return false
+  }
+
+  if (toolResult.content.length === 0) {
+    return false
+  }
+
+  const firstBlock = toolResult.content[0]
+  if (firstBlock.type !== "text") {
+    return false
+  }
+
+  return firstBlock.text.startsWith(PDF_FILE_READ_PREFIX)
+}
+
+const collectMergeableUserContent = (
+  content: Array<AnthropicUserContentBlock>,
+): {
+  toolResults: Array<AnthropicToolResultBlock>
+  textBlocks: Array<AnthropicTextBlock>
+  attachments: Array<IndexedAttachment>
+} | null => {
+  const toolResults: Array<AnthropicToolResultBlock> = []
+  const textBlocks: Array<AnthropicTextBlock> = []
+  const attachments: Array<IndexedAttachment> = []
+
+  for (const [order, block] of content.entries()) {
+    if (block.type === "tool_result") {
+      toolResults.push(block)
+      continue
+    }
+    if (block.type === "text") {
+      textBlocks.push(block)
+      continue
+    }
+    if (isAttachmentBlock(block)) {
+      attachments.push({ attachment: block, order })
+      continue
+    }
+
+    return null
+  }
+
+  return {
+    toolResults,
+    textBlocks,
+    attachments,
+  }
+}
+
+const mergeAttachmentsForToolResults = (
+  toolResults: Array<AnthropicToolResultBlock>,
+  attachments: Array<IndexedAttachment>,
+): Array<AnthropicToolResultBlock> => {
+  if (attachments.length === 0) {
+    return toolResults
+  }
+
+  const documentBlocks = attachments.filter(
+    ({ attachment }) => attachment.type === "document",
+  )
+  const mergeableToolResultIndices = getMergeableToolResultIndices(toolResults)
+  const pdfReadToolResultIndices = mergeableToolResultIndices.filter((index) =>
+    startsWithPdfFileRead(toolResults[index]),
+  )
+
+  const attachmentsByToolResultIndex = new Map<
+    number,
+    Array<IndexedAttachment>
+  >()
+  let remainingAttachments = attachments
+  let countMatchToolResultIndices = mergeableToolResultIndices
+
+  // Match PDF read tool results and documents in order first, then leave any
+  // unmatched documents to the generic fallback path below.
+  if (documentBlocks.length > 0 && pdfReadToolResultIndices.length > 0) {
+    const matchedDocumentCount = Math.min(
+      pdfReadToolResultIndices.length,
+      documentBlocks.length,
+    )
+    const matchedDocuments = documentBlocks.slice(0, matchedDocumentCount)
+    const matchedDocumentOrders = new Set(
+      matchedDocuments.map(({ order }) => order),
+    )
+    const matchedPdfToolResultIndices = pdfReadToolResultIndices.slice(
+      0,
+      matchedDocumentCount,
+    )
+    const matchedPdfToolResultIndexSet = new Set(matchedPdfToolResultIndices)
+
+    assignAttachmentsToToolResults(
+      attachmentsByToolResultIndex,
+      matchedDocuments,
+      {
+        toolResultIndices: matchedPdfToolResultIndices,
+      },
+    )
+    countMatchToolResultIndices = mergeableToolResultIndices.filter(
+      (index) => !matchedPdfToolResultIndexSet.has(index),
+    )
+    remainingAttachments = attachments.filter(
+      ({ attachment, order }) =>
+        attachment.type !== "document" || !matchedDocumentOrders.has(order),
+    )
+  }
+
+  // Everything else keeps the existing count-match / last-tool-result fallback.
+  assignAttachmentsToToolResults(
+    attachmentsByToolResultIndex,
+    remainingAttachments,
+    {
+      toolResultIndices: countMatchToolResultIndices,
+      fallbackToolResultIndices: mergeableToolResultIndices,
+    },
+  )
+
+  return mergeAttachmentsIntoToolResults(
+    toolResults,
+    attachmentsByToolResultIndex,
+  )
+}
+
+const mergeUserMessageContent = (
+  content: Array<AnthropicUserContentBlock>,
+): Array<AnthropicUserContentBlock> | null => {
+  const mergeableContent = collectMergeableUserContent(content)
+  if (!mergeableContent) {
+    return null
+  }
+
+  const { toolResults, textBlocks, attachments } = mergeableContent
+  if (
+    toolResults.length === 0
+    || (textBlocks.length === 0 && attachments.length === 0)
+  ) {
+    return null
+  }
+
+  const mergedToolResults =
+    textBlocks.length === 0 ?
+      toolResults
+    : mergeToolResult(toolResults, textBlocks)
+
+  return mergeAttachmentsForToolResults(mergedToolResults, attachments)
 }
 
 const mergeToolResult = (
@@ -148,29 +429,46 @@ export const stripToolReferenceTurnBoundary = (
 
 export const mergeToolResultForClaude = (
   anthropicPayload: AnthropicMessagesPayload,
+  options?: {
+    skipLastMessage?: boolean
+  },
 ): void => {
-  for (const msg of anthropicPayload.messages) {
+  const lastMessageIndex = anthropicPayload.messages.length - 1
+
+  for (const [index, msg] of anthropicPayload.messages.entries()) {
+    if (options?.skipLastMessage && index === lastMessageIndex) continue
+
     if (msg.role !== "user" || !Array.isArray(msg.content)) continue
 
-    const toolResults: Array<AnthropicToolResultBlock> = []
-    const textBlocks: Array<AnthropicTextBlock> = []
-    let valid = true
+    const mergedContent = mergeUserMessageContent(msg.content)
+    if (mergedContent) {
+      msg.content = mergedContent
+    }
+  }
+}
 
-    for (const block of msg.content) {
-      if (block.type === "tool_result") {
-        toolResults.push(block)
-      } else if (block.type === "text") {
-        textBlocks.push(block)
-      } else {
-        valid = false
-        break
-      }
+// align with vscode copilot claude agent tools
+export const sanitizeIdeTools = (payload: AnthropicMessagesPayload): void => {
+  if (!payload.tools || payload.tools.length === 0) {
+    return
+  }
+
+  payload.tools = payload.tools.flatMap((tool) => {
+    if (tool.name === IDE_EXECUTE_CODE_TOOL && !tool.defer_loading) {
+      return []
     }
 
-    if (!valid || toolResults.length === 0 || textBlocks.length === 0) continue
+    if (tool.name === IDE_GET_DIAGNOSTICS_TOOL) {
+      return [
+        {
+          ...tool,
+          description: IDE_GET_DIAGNOSTICS_DESCRIPTION,
+        },
+      ]
+    }
 
-    msg.content = mergeToolResult(toolResults, textBlocks)
-  }
+    return [tool]
+  })
 }
 
 const hasToolRef = (block: AnthropicToolResultBlock) => {
@@ -225,6 +523,8 @@ export const prepareMessagesApiPayload = (
   stripCacheControl(payload)
   filterAssistantThinkingBlocks(payload)
 
+  const hasThinking = Boolean(payload.thinking)
+
   // https://platform.claude.com/docs/en/build-with-claude/extended-thinking#extended-thinking-with-tool-use
   // Using tool_choice: {"type": "any"} or tool_choice: {"type": "tool", "name": "..."} will result in an error because these options force tool use, which is incompatible with extended thinking.
   const toolChoice = payload.tool_choice
@@ -234,8 +534,23 @@ export const prepareMessagesApiPayload = (
     payload.thinking = {
       type: "adaptive",
     }
+    // align with vscode copilot
+    if (!hasThinking) {
+      payload.thinking.display = "summarized"
+    }
+    if (payload.model === "claude-opus-4.7") {
+      payload.thinking.display = "summarized"
+    }
+    let effort = getReasoningEffortForModel(payload.model)
+    if (effort === "none" || effort === "minimal") {
+      effort = "low"
+    }
+    const reasoningEffort = selectedModel.capabilities.supports.reasoning_effort
+    if (reasoningEffort && !reasoningEffort.includes(effort)) {
+      effort = reasoningEffort.at(-1) as "low" | "medium" | "high"
+    }
     payload.output_config = {
-      effort: getAnthropicEffortForModel(payload.model),
+      effort: effort,
     }
   }
 }
