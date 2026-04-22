@@ -62,6 +62,8 @@ export const createChatCompletions = async (
 
   prepareForCompact(headers, options.compactType)
 
+  consola.log(`<-- model: ${payload.model}`)
+
   const response = await fetch(`${copilotBaseUrl(state)}/chat/completions`, {
     method: "POST",
     headers,
